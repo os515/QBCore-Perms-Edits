@@ -78,6 +78,35 @@ function QBCore.Functions.RemovePermission(source, permission)
     end
 end
 
+AddEventHandler('QBCore:Server:PlayerLoaded', function(Player)
+    local src = Player.PlayerData.source
+    if not Player then return end
+
+    local identifier
+    if USE_LICENSE_ID then
+        identifier = GetPlayerIdentifier(src, 'license') or Player.PlayerData.license
+    else
+        identifier = Player.PlayerData.citizenid
+    end
+
+    MySQL.Async.fetchAll('SELECT permission FROM permissions WHERE identifier = ?', {
+        identifier
+    }, function(result)
+        if result and #result > 0 then
+            for _, row in ipairs(result) do
+                local permission = row.permission
+                
+                
+                ExecuteCommand(('add_principal identifier.%s qbcore.%s'):format(identifier, permission))
+
+                TriggerClientEvent('QBCore:Client:OnPermissionUpdate', src, permission)
+            end
+            
+            QBCore.Commands.Refresh(src)
+        end
+    end)
+end)
+
 ```
 
 ### 2️⃣ Database Setup
