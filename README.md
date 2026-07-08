@@ -1,115 +1,53 @@
 # QBCore-Perms-Edits
-This edit make the perm saves on data and optional based on citizen id or licence 
 
+Advanced Permission System for QBCore Framework - Persistent database-backed permissions with CitizenID or License-based identifiers.
 
-# 🛠️ QB-Core Advanced Permission System
+![Version](https://img.shields.io/badge/version-2.0.0-blue)
+![QBCore](https://img.shields.io/badge/QBCore-Compatible-green)
+![License](https://img.shields.io/badge/license-GPL--3.0-orange)
 
-![QB-Core](https://img.shields.io/badge/QBCore-Compatible-blue)
-![License](https://img.shields.io/badge/License-GPL--3.0-orange)
+---
 
-## 📌 Features
-- ✅ Persistent permission storage
-- 🔄 Automatic permission synchronization
-- 👮‍♂️ CitizenID **or** License based (configurable)
-- 📊 MySQL database integration
-- 🔒 ACE permission system support
+## Features
 
-## ⚙️ Installation
+- **Persistent Permissions** - Permissions survive server restarts via MySQL storage
+- **Dual Identifier Support** - Use CitizenID (character-based) or License (account-based)
+- **Auto-Sync on Join** - Database permissions are automatically applied when players connect
+- **Memory Cache** - Prevents double-loading and improves performance
+- **Debug Logging** - Optional verbose logging for troubleshooting
+- **Admin Commands** - Built-in `/setperm` and `/removeperm` commands
+- **Error Handling** - pcall-wrapped ACE commands with nil checks throughout
+- **Clean Architecture** - Separated config, database, and logic layers
 
-### 1️⃣ Modify QB-Core Functions
-Replace these in `qb-core/server/functions.lua`:
+---
 
-```lua
--- CONFIG: Set to true to use License instead of CitizenID
-local USE_LICENSE_ID = false 
+## Installation
 
-function QBCore.Functions.AddPermission(source, permission)
-    local src = source
-    local Player = QBCore.Functions.GetPlayer(src)
-    if not Player then return end
+### 1. Install as Standalone Resource (Recommended)
 
-    local identifier, identifierType
-    if USE_LICENSE_ID then
-        identifier = GetPlayerIdentifier(src, 'license') or Player.PlayerData.license
-        identifierType = 'license'
-    else
-        identifier = Player.PlayerData.citizenid
-        identifierType = 'citizenid'
-    end
-   
-    QBCore.Config.Server.Permissions[identifier] = {
-        identifier = identifier,
-        permission = permission:lower()
-    }
-    MySQL.Async.execute('DELETE FROM permissions WHERE identifier = ?', { identifier })
-    MySQL.Async.insert('INSERT INTO permissions (name, identifier, permission, type) VALUES (?, ?, ?, ?)', {
-        GetPlayerName(src),
-        identifier,
-        permission:lower(),
-        identifierType
-    })
-    ExecuteCommand(('add_principal identifier.%s qbcore.%s'):format(identifier, permission))
-    QBCore.Commands.Refresh(src)
-    TriggerClientEvent('QBCore:Client:OnPermissionUpdate', src, permission)
-end
-
-function QBCore.Functions.RemovePermission(source, permission)
-    local src = source
-    local Player = QBCore.Functions.GetPlayer(src)
-    if not Player then return end
-
-    local identifier
-    if USE_LICENSE_ID then
-        identifier = GetPlayerIdentifier(src, 'license') or Player.PlayerData.license
-    else
-        identifier = Player.PlayerData.citizenid
-    end
-    
-    if permission then
-        if IsPlayerAceAllowed(src, permission) then
-            ExecuteCommand(('remove_principal identifier.%s qbcore.%s'):format(identifier, permission))
-            MySQL.Async.execute('DELETE FROM permissions WHERE identifier = ? AND permission = ?', { identifier, permission:lower() })
-            QBCore.Commands.Refresh(src)
-        end
-    else
-        ExecuteCommand(('remove_principal identifier.%s qbcore'):format(identifier))
-        MySQL.Async.execute('DELETE FROM permissions WHERE identifier = ?', { identifier })
-        QBCore.Commands.Refresh(src)
-    end
-end
-
-AddEventHandler('QBCore:Server:PlayerLoaded', function(Player)
-    local src = Player.PlayerData.source
-    if not Player then return end
-
-    local identifier
-    if USE_LICENSE_ID then
-        identifier = GetPlayerIdentifier(src, 'license') or Player.PlayerData.license
-    else
-        identifier = Player.PlayerData.citizenid
-    end
-
-    MySQL.Async.fetchAll('SELECT permission FROM permissions WHERE identifier = ?', {
-        identifier
-    }, function(result)
-        if result and #result > 0 then
-            for _, row in ipairs(result) do
-                local permission = row.permission
-                
-                
-                ExecuteCommand(('add_principal identifier.%s qbcore.%s'):format(identifier, permission))
-
-                TriggerClientEvent('QBCore:Client:OnPermissionUpdate', src, permission)
-            end
-            
-            QBCore.Commands.Refresh(src)
-        end
-    end)
-end)
+This is the **easiest** method - just drop it in and it overrides the built-in functions.
 
 ```
+ensure oxmysql   -- must be started before this resource
+ensure qb-core
+ensure QBCore-Perms-Edits   -- add this after qb-core
+```
 
-### 2️⃣ Database Setup
+Copy the `QBCore-Perms-Edits` folder to your `resources/[qb]/` directory.
+
+### 2. Configure
+
+Edit `config.lua`:
+
+```lua
+Config.UseLicenseId = false   -- true = license-based, false = citizenid-based
+Config.Debug = false          -- true = verbose console logging
+```
+
+### 3. Database Setup
+
+Run this SQL to create the permissions table:
+
 ```sql
 CREATE TABLE IF NOT EXISTS `permissions` (
   `id` INT(11) NOT NULL AUTO_INCREMENT,
@@ -123,8 +61,127 @@ CREATE TABLE IF NOT EXISTS `permissions` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
 
-## 📝 License
-This project is licensed under GPL-3.0. Please include attribution if modifying/distributing.
+### 4. Alternative: Manual Integration into qb-core
 
-## ⚠️ Important Notes
-1. Set `USE_LICENSE_ID` to true if you prefer license-based permissions
+If you prefer to keep everything in `qb-core`:
+
+1. Copy contents of `server/database.lua` into `qb-core/server/functions.lua`
+2. Copy contents of `server/main.lua` into `qb-core/server/functions.lua`
+3. Copy `config.lua` contents into `qb-core/shared/config.lua`
+4. Ensure `oxmysql` is properly configured in `fxmanifest.lua`
+
+---
+
+## Admin Commands
+
+| Command | Description | Permission Required |
+|---------|-------------|---------------------|
+| `/setperm [id] [permission]` | Set a player's permission level | admin, god |
+| `/removeperm [id]` | Remove all permissions from a player | admin, god |
+
+### Examples:
+```
+/setperm 5 admin     -- Give player ID 5 admin permissions
+/removeperm 5        -- Remove all permissions from player ID 5
+```
+
+---
+
+## How It Works
+
+### Permission Flow
+
+```
+Player Joins
+    |
+    v
+QBCore:Server:PlayerLoaded fires
+    |
+    v
+Fetch permissions from DB (by citizenid/license)
+    |
+    v
+Apply ACE principals (add_principal identifier.xxx qbcore.admin)
+    |
+    v
+Refresh commands (player can now use admin commands)
+    |
+    v
+Client receives OnPermissionUpdate event
+```
+
+### Data Flow (Granting Permission)
+
+```
+/setperm 5 admin
+    |
+    v
+AddPermission(5, "admin")
+    |
+    v
+Save to DB (DELETE old + INSERT new)
+    |
+    v
+Apply ACE principal in memory
+    |
+    v
+Commands.Refresh(5)  -- player can use admin commands
+```
+
+---
+
+## ACE Configuration
+
+Make sure your `server.cfg` has the appropriate ACE groups:
+
+```cfg
+# Permission groups
+add_ace group.admin command.setperm allow
+add_ace group.admin command.removeperm allow
+add_ace group.god command.setperm allow
+add_ace group.god command.removeperm allow
+```
+
+---
+
+## Troubleshooting
+
+### Permissions not applying on join?
+- Enable `Config.Debug = true` and check server console
+- Verify `QBCore:Server:PlayerLoaded` event fires (check qb-core events)
+- Ensure `oxmysql` is properly connected and the `permissions` table exists
+- Check that `USE_LICENSE_ID` matches how permissions were originally saved
+
+### ACE principal errors?
+- Verify your `server.cfg` has `qbcore.admin`, `qbcore.god`, etc. groups defined
+- Check that `add_principal` commands use valid identifiers
+
+### Database errors?
+- Ensure `oxmysql` resource is started and configured
+- Verify MySQL connection string in `server.cfg`
+- Check that the `permissions` table was created successfully
+
+---
+
+## Changelog
+
+### v2.0.0
+- Restructured into proper resource with fxmanifest.lua
+- Merged PR #1: Added PlayerLoaded event handler for permission sync
+- Fixed critical bug: nil check now happens BEFORE using Player.PlayerData
+- Added memory cache to prevent double-loading permissions
+- Added database abstraction layer (server/database.lua)
+- Added pcall error handling for ACE commands
+- Added debug logging system
+- Added `/setperm` and `/removeperm` admin commands
+- Added input validation (source checks, nil checks, permission sanitization)
+- Added playerDropped cleanup handler
+
+### v1.0.0
+- Initial release - README-only documentation
+
+---
+
+## License
+
+GPL-3.0 - Include attribution if modifying or distributing.
