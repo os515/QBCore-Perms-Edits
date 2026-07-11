@@ -1,21 +1,10 @@
-# QBCore-Perms-Edits
+# QBCore Persistent Permissions Edit
 
-A drop-in replacement for the default QBCore permission system that adds **persistent database storage** for player permissions.
+Directly edit `qb-core` to save permissions in the database and restore them on player join. No separate resource needed.
 
-## What This Does
+---
 
-This resource **overrides** the built-in `QBCore.Functions.AddPermission`, `QBCore.Functions.RemovePermission`, and `QBCore.Functions.HasPermission` functions from `qb-core` so that all permission changes are saved to the database and automatically restored when players rejoin.
-
-## Key Features
-
-- **Persistent Permissions** — Permissions survive server restarts
-- **CitizenID or License Mode** — Choose whether permissions are tied to a character or an account
-- **ACE Principal Integration** — Works with your existing `server.cfg` ACE groups
-- **Drop-in Replacement** — Just start this resource after `qb-core`, no other changes needed
-
-## Installation
-
-### 1. Database Setup
+## 1. Database Setup
 
 Run this SQL to create the permissions table:
 
@@ -30,62 +19,396 @@ CREATE TABLE IF NOT EXISTS `permissions` (
 );
 ```
 
-### 2. Install the Resource
+---
 
-1. Download and place in your `resources` folder
-2. **Important**: Ensure this resource starts **after** `qb-core` in your `server.cfg`:
+## 2. Edit `qb-core/server/functions.lua`
 
-```cfg
-# Core framework MUST come first
-ensure qb-core
+### Step 2a — Replace `QBCore.Functions.AddPermission`
 
-# ... your other resources ...
+**Find this (original):**
 
-# This resource must start AFTER qb-core
-ensure QBCore-Perms-Edits
+```lua
+---Add permission for player
+---@param source any
+---@param permission string
+function QBCore.Functions.AddPermission(source, permission)
+    if not IsPlayerAceAllowed(source, permission) then
+        ExecuteCommand(('add_principal player.%s qbcore.%s'):format(source, permission))
+        QBCore.Commands.Refresh(source)
+    end
+end
 ```
 
-### 3. Configure
+**Replace with:**
 
-Edit `config.lua` to match your server setup:
+```lua
+---Add permission for player (database-backed)
+---@param source any
+---@param permission string
+function QBCore.Functions.AddPermission(source, permission)
+    local src = tonumber(source)
+    if not src or src <= 0 then return end
 
-| Option | Description |
-|--------|-------------|
-| `Config.UseLicenseId` | `false` = permissions tied to CitizenID (character-based), `true` = tied to License (account-based) |
-| `Config.PermissionLevels` | Must match the ACE groups in your `server.cfg` |
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
 
-### 4. ACE Groups (server.cfg)
+    -- CONFIG: set to true for license-based, false for citizenid-based
+    local UseLicenseId = false
 
-Make sure your `server.cfg` has the ACE groups defined:
+    local identifier, idType
+    if UseLicenseId then
+        identifier = QBCore.Functions.GetIdentifier(src, 'license') or Player.PlayerData.license
+        idType = 'license'
+    else
+        identifier = Player.PlayerData.citizenid
+        idType = 'citizenid'
+    end
 
-```cfg
-# Example ACE principals
-add_ace qbcore.god command allow
-add_ace qbcore.admin command allow
-add_ace qbcore.moderator command allow
+    if not identifier then return end
+
+    local cleanPermission = permission:lower()
+
+    -- Store in memory
+    QBCore.Config.Server.Permissions[identifier] = {
+        identifier = identifier,
+        permission = cleanPermission
+    }
+
+    -- Persist to database
+    MySQL.Async.execute('DELETE FROM permissions WHERE identifier = ?', { identifier }, function()
+        MySQL.Async.insert(
+            'INSERT INTO permissions (name, identifier, permission, type) VALUES (?, ?, ?, ?)',
+            { GetPlayerName(src), identifier, cleanPermission, idType }
+        )
+    end)
+
+    -- Apply ACE principal (uses identifier, not player source)
+    ExecuteCommand(('add_principal identifier.%s qbcore.%s'):format(identifier, cleanPermission))
+    QBCore.Commands.Refresh(src)
+
+    -- Notify client
+    TriggerClientEvent('QBCore:Client:OnPermissionUpdate', src, cleanPermission)
+end
 ```
+
+---
+
+### Step 2b — Replace `QBCore.Functions.RemovePermission`
+
+**Find this (original):**
+
+```lua
+---Remove permission from player
+---@param source any
+---@param permission string
+function QBCore.Functions.RemovePermission(source, permission)
+    if permission then
+        if IsPlayerAceAllowed(source, permission) then
+            ExecuteCommand(('remove_principal player.%s qbcore.%s'):format(source, permission))
+            QBCore.Commands.Refresh(source)
+        end
+    else
+        for _, v in pairs(QBCore.Config.Server.Permissions) do
+            if IsPlayerAceAllowed(source, v) then
+                ExecuteCommand(('remove_principal player.%s qbcore.%s'):format(source, v))
+                QBCore.Commands.Refresh(source)
+            end
+        end
+    end
+end
+```
+
+**Replace with:**
+
+```lua
+---Remove permission from player (database-backed)
+---@param source any
+---@param permission string
+function QBCore.Functions.RemovePermission(source, permission)
+    local src = tonumber(source)
+    if not src or src <= 0 then return end
+
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+
+    -- CONFIG: set to true for license-based, false for citizenid-based
+    local UseLicenseId = false
+
+    local identifier
+    if UseLicenseId then
+        identifier = QBCore.Functions.GetIdentifier(src, 'license') or Player.PlayerData.license
+    else
+        identifier = Player.PlayerData.citizenid
+    end
+
+    if not identifier then return end
+
+    if permission then
+        local cleanPermission = permission:lower()
+
+        -- Remove from database
+        MySQL.Async.execute('DELETE FROM permissions WHERE identifier = ? AND permission = ?',
+            { identifier, cleanPermission })
+
+        -- Remove ACE principal
+        ExecuteCommand(('remove_principal identifier.%s qbcore.%s'):format(identifier, cleanPermission))
+
+        -- Remove from memory
+        if QBCore.Config.Server.Permissions[identifier] then
+            QBCore.Config.Server.Permissions[identifier] = nil
+        end
+
+        QBCore.Commands.Refresh(src)
+    else
+        -- Remove all permissions
+        MySQL.Async.execute('DELETE FROM permissions WHERE identifier = ?', { identifier })
+
+        -- Remove all ACE principals for this identifier
+        for _, perm in ipairs(QBCore.Config.Server.Permissions) do
+            ExecuteCommand(('remove_principal identifier.%s qbcore.%s'):format(identifier, perm))
+        end
+
+        -- Clear from memory
+        QBCore.Config.Server.Permissions[identifier] = nil
+
+        QBCore.Commands.Refresh(src)
+    end
+end
+```
+
+---
+
+### Step 2c — Replace `QBCore.Functions.HasPermission`
+
+**Find this (original):**
+
+```lua
+---Check if player has permission
+---@param source any
+---@param permission string
+---@return boolean
+function QBCore.Functions.HasPermission(source, permission)
+    if type(permission) == 'string' then
+        if IsPlayerAceAllowed(source, permission) then return true end
+    elseif type(permission) == 'table' then
+        for _, permLevel in pairs(permission) do
+            if IsPlayerAceAllowed(source, permLevel) then return true end
+        end
+    end
+
+    return false
+end
+```
+
+**Replace with:**
+
+```lua
+---Check if player has permission
+---@param source any
+---@param permission string
+---@return boolean
+function QBCore.Functions.HasPermission(source, permission)
+    local src = tonumber(source)
+    if not src or src <= 0 then return false end
+
+    if type(permission) == 'string' then
+        if IsPlayerAceAllowed(src, permission) then return true end
+    elseif type(permission) == 'table' then
+        for _, permLevel in pairs(permission) do
+            if IsPlayerAceAllowed(src, permLevel) then return true end
+        end
+    end
+
+    return false
+end
+```
+
+---
+
+### Step 2d — Replace `QBCore.Functions.GetPermission`
+
+**Find this (original):**
+
+```lua
+---Get the players permissions
+---@param source any
+---@return table
+function QBCore.Functions.GetPermission(source)
+    local src = source
+    local perms = {}
+    for _, v in pairs(QBCore.Config.Server.Permissions) do
+        if IsPlayerAceAllowed(src, v) then
+            perms[v] = true
+        end
+    end
+    return perms
+end
+```
+
+**Replace with:**
+
+```lua
+---Get the players permissions
+---@param source any
+---@return table
+function QBCore.Functions.GetPermission(source)
+    local src = tonumber(source)
+    if not src or src <= 0 then return {} end
+
+    local perms = {}
+    for _, v in pairs(QBCore.Config.Server.Permissions) do
+        if IsPlayerAceAllowed(src, v) then
+            perms[v] = true
+        end
+    end
+    return perms
+end
+```
+
+---
+
+## 3. Edit `qb-core/server/events.lua`
+
+### Step 3a — Add permission loading when player joins
+
+**Find this event (around line 230):**
+
+```lua
+RegisterNetEvent('QBCore:Server:OnPlayerLoaded', function()
+    local src = source
+    if not QBCore.Players[src] then return end
+    TriggerClientEvent('QBCore:Client:OnPlayerLoaded', src)
+end)
+```
+
+**Replace with:**
+
+```lua
+-- Local cache to prevent double-loading permissions
+local loadedPermissions = {}
+
+RegisterNetEvent('QBCore:Server:OnPlayerLoaded', function()
+    local src = source
+    if not QBCore.Players[src] then return end
+
+    -- Load and apply stored permissions from database
+    local Player = QBCore.Players[src]
+    if Player and Player.PlayerData then
+        -- CONFIG: must match the setting in functions.lua
+        local UseLicenseId = false
+
+        local identifier
+        if UseLicenseId then
+            identifier = QBCore.Functions.GetIdentifier(src, 'license') or Player.PlayerData.license
+        else
+            identifier = Player.PlayerData.citizenid
+        end
+
+        if identifier and not loadedPermissions[src] then
+            MySQL.Async.fetchAll('SELECT permission FROM permissions WHERE identifier = ?', { identifier }, function(result)
+                if result and #result > 0 then
+                    loadedPermissions[src] = true
+
+                    for _, row in ipairs(result) do
+                        local perm = row.permission
+                        if perm then
+                            ExecuteCommand(('add_principal identifier.%s qbcore.%s'):format(identifier, perm))
+                            TriggerClientEvent('QBCore:Client:OnPermissionUpdate', src, perm)
+                        end
+                    end
+
+                    QBCore.Commands.Refresh(src)
+                end
+            end)
+        end
+    end
+
+    TriggerClientEvent('QBCore:Client:OnPlayerLoaded', src)
+end)
+```
+
+---
+
+### Step 3b — Clean up cache on player drop
+
+**Find this event (around line 12):**
+
+```lua
+AddEventHandler('playerDropped', function(reason)
+    local src = source
+    if not QBCore.Players[src] then return end
+    local player = QBCore.Players[src]
+    TriggerEvent('qb-log:server:CreateLog', 'joinleave', 'Dropped', 'red', '**' .. GetPlayerName(src) .. '** (' .. player.PlayerData.license .. ') left..' .. '\n **Reason:** ' .. reason)
+    player.Functions.Save()
+    TriggerEvent('QBCore:Server:PlayerDropped', src)
+    TriggerEvent('QBCore:Server:OnPlayerUnload', src)
+    QBCore.Player_Buckets[player.PlayerData.license] = nil
+    QBCore.PlayersByCitizenId[player.PlayerData.citizenid] = nil
+    QBCore.Players[src] = nil
+end)
+```
+
+**Replace with:**
+
+```lua
+AddEventHandler('playerDropped', function(reason)
+    local src = source
+    if not QBCore.Players[src] then return end
+    local player = QBCore.Players[src]
+    TriggerEvent('qb-log:server:CreateLog', 'joinleave', 'Dropped', 'red', '**' .. GetPlayerName(src) .. '** (' .. player.PlayerData.license .. ') left..' .. '\n **Reason:** ' .. reason)
+    player.Functions.Save()
+    TriggerEvent('QBCore:Server:PlayerDropped', src)
+    TriggerEvent('QBCore:Server:OnPlayerUnload', src)
+    QBCore.Player_Buckets[player.PlayerData.license] = nil
+    QBCore.PlayersByCitizenId[player.PlayerData.citizenid] = nil
+    QBCore.Players[src] = nil
+
+    -- Clean up permission cache
+    if loadedPermissions[src] then
+        loadedPermissions[src] = nil
+    end
+end)
+```
+
+---
+
+## 4. (Optional) Update Admin Commands
+
+The built-in `/addpermission` and `/removepermission` commands are restricted to `god` only. To allow `admin` to use them too, edit `qb-core/server/commands.lua`:
+
+**Find:**
+
+```lua
+QBCore.Commands.Add('addpermission', ...
+```
+
+Change the last argument from `'god'` to `'admin'` (or `{'god', 'admin'}`).
+
+Same for `removepermission`.
+
+---
 
 ## How It Works
 
-This resource uses the `exports['qb-core']:GetCoreObject()` pattern to grab the QBCore object and then **replaces** the permission functions directly on it. Since it starts after `qb-core`, all internal calls within qb-core (and other resources) will use the new database-backed functions automatically.
+| Original | New |
+|----------|-----|
+| Uses `player.%s` ACE principal (tied to session) | Uses `identifier.%s` ACE principal (tied to citizenid/license) |
+| Permissions lost on restart | Saved to `permissions` table, restored on join |
+| No DB storage | MySQL table with unique identifier index |
 
-### Commands
-
-| Command | Permission | Description |
-|---------|-----------|-------------|
-| `/setperm [id] [permission]` | admin/god | Set a player's permission level |
-| `/removeperm [id]` | admin/god | Remove all permissions from a player |
+---
 
 ## Troubleshooting
 
-### Permissions not saving?
-- Check that `oxmysql` is running and the database table exists
-- Enable `Config.Debug = true` in `config.lua` to see console logs
+**Permissions not applying on join?**
+- Check that `UseLicenseId` matches in BOTH `functions.lua` and `events.lua`
+- Verify the `permissions` table exists in your database
+- Check server console for MySQL errors
 
-### Resource not overriding?
-- Make sure `QBCore-Perms-Edits` starts **after** `qb-core` in `server.cfg`
-- Check for errors in the server console on startup
+**ACE principals not working?**
+- Make sure your `server.cfg` has: `add_ace qbcore.god command allow` (and same for admin, moderator)
+- Restart the server fully after changing ACE settings
 
-### ACE principals not working?
-- Verify your `server.cfg` has the correct `add_ace qbcore.[permission]` entries
-- Restart the server after changing ACE settings (reconnecting isn't enough)
+**Want to switch from CitizenID to License?**
+- Change `UseLicenseId = false` to `UseLicenseId = true` in both files
+- Existing DB rows will need their `type` column updated or re-created
