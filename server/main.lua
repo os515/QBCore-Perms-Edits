@@ -1,3 +1,5 @@
+local QBCore = exports['qb-core']:GetCoreObject()
+
 local function debugLog(...)
     if Config.Debug then
         print('[^2QBCore-Perms^7]', ...)
@@ -40,7 +42,7 @@ end
 
 --- Remove ACE principal for a permission
 -- @param identifier string - Player's identifier
--- @param permission string|nil - Permission to remove, nil removes all
+-- @param permission string|nil - Permission to remove, nil removes all qbcore.* principals
 local function removeAcePrincipal(identifier, permission)
     if not identifier then return false end
 
@@ -48,7 +50,10 @@ local function removeAcePrincipal(identifier, permission)
         if permission then
             ExecuteCommand(('remove_principal identifier.%s qbcore.%s'):format(identifier, permission))
         else
-            ExecuteCommand(('remove_principal identifier.%s qbcore'):format(identifier))
+            -- Remove all known permission principals for this identifier
+            for _, perm in ipairs(Config.PermissionLevels) do
+                ExecuteCommand(('remove_principal identifier.%s qbcore.%s'):format(identifier, perm))
+            end
         end
     end)
 
@@ -273,7 +278,7 @@ QBCore.Commands.Add('setperm', 'Set player permission level (Admin Only)', {
     end
 
     if not QBCore.Functions.HasPermission(src, 'god') and not QBCore.Functions.HasPermission(src, 'admin') then
-        TriggerClientEvent('QBCore:Notify', src = src, 'No permission', 'error')
+        TriggerClientEvent('QBCore:Notify', src, 'No permission', 'error')
         return
     end
 
