@@ -3,7 +3,7 @@ game 'gta5'
 
 description 'QBCore Advanced Permission System - Persistent permission storage with CitizenID or License based identifiers'
 author 'os515'
-version '2.0.0'
+version '2.0.1'
 
 shared_scripts {
     'config.lua'
@@ -17,3 +17,5 @@ server_scripts {
 
 lua54 'yes'
 use_experimental_fxv2_oal 'yes'
+
+dependency 'oxmysql'
