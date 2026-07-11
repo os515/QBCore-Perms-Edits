@@ -1,187 +1,91 @@
 # QBCore-Perms-Edits
 
-Advanced Permission System for QBCore Framework - Persistent database-backed permissions with CitizenID or License-based identifiers.
+A drop-in replacement for the default QBCore permission system that adds **persistent database storage** for player permissions.
 
-![Version](https://img.shields.io/badge/version-2.0.0-blue)
-![QBCore](https://img.shields.io/badge/QBCore-Compatible-green)
-![License](https://img.shields.io/badge/license-GPL--3.0-orange)
+## What This Does
 
----
+This resource **overrides** the built-in `QBCore.Functions.AddPermission`, `QBCore.Functions.RemovePermission`, and `QBCore.Functions.HasPermission` functions from `qb-core` so that all permission changes are saved to the database and automatically restored when players rejoin.
 
-## Features
+## Key Features
 
-- **Persistent Permissions** - Permissions survive server restarts via MySQL storage
-- **Dual Identifier Support** - Use CitizenID (character-based) or License (account-based)
-- **Auto-Sync on Join** - Database permissions are automatically applied when players connect
-- **Memory Cache** - Prevents double-loading and improves performance
-- **Debug Logging** - Optional verbose logging for troubleshooting
-- **Admin Commands** - Built-in `/setperm` and `/removeperm` commands
-- **Error Handling** - pcall-wrapped ACE commands with nil checks throughout
-- **Clean Architecture** - Separated config, database, and logic layers
-
----
+- **Persistent Permissions** — Permissions survive server restarts
+- **CitizenID or License Mode** — Choose whether permissions are tied to a character or an account
+- **ACE Principal Integration** — Works with your existing `server.cfg` ACE groups
+- **Drop-in Replacement** — Just start this resource after `qb-core`, no other changes needed
 
 ## Installation
 
-### 1. Install as Standalone Resource (Recommended)
-
-This is the **easiest** method - just drop it in and it overrides the built-in functions.
-
-```
-ensure oxmysql   -- must be started before this resource
-ensure qb-core
-ensure QBCore-Perms-Edits   -- add this after qb-core
-```
-
-Copy the `QBCore-Perms-Edits` folder to your `resources/[qb]/` directory.
-
-### 2. Configure
-
-Edit `config.lua`:
-
-```lua
-Config.UseLicenseId = false   -- true = license-based, false = citizenid-based
-Config.Debug = false          -- true = verbose console logging
-```
-
-### 3. Database Setup
+### 1. Database Setup
 
 Run this SQL to create the permissions table:
 
 ```sql
 CREATE TABLE IF NOT EXISTS `permissions` (
-  `id` INT(11) NOT NULL AUTO_INCREMENT,
-  `identifier` VARCHAR(255) NOT NULL,
-  `name` VARCHAR(50) DEFAULT NULL,
-  `permission` VARCHAR(50) DEFAULT 'user',
-  `type` ENUM('citizenid','license') DEFAULT 'citizenid',
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `identifier` (`identifier`),
-  KEY `permission` (`permission`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `id` INT AUTO_INCREMENT PRIMARY KEY,
+    `name` VARCHAR(255) NOT NULL,
+    `identifier` VARCHAR(255) NOT NULL,
+    `permission` VARCHAR(50) NOT NULL,
+    `type` VARCHAR(20) NOT NULL DEFAULT 'citizenid',
+    UNIQUE KEY `unique_identifier` (`identifier`)
+);
 ```
 
-### 4. Alternative: Manual Integration into qb-core
+### 2. Install the Resource
 
-If you prefer to keep everything in `qb-core`:
+1. Download and place in your `resources` folder
+2. **Important**: Ensure this resource starts **after** `qb-core` in your `server.cfg`:
 
-1. Copy contents of `server/database.lua` into `qb-core/server/functions.lua`
-2. Copy contents of `server/main.lua` into `qb-core/server/functions.lua`
-3. Copy `config.lua` contents into `qb-core/shared/config.lua`
-4. Ensure `oxmysql` is properly configured in `fxmanifest.lua`
+```cfg
+# Core framework MUST come first
+ensure qb-core
 
----
+# ... your other resources ...
 
-## Admin Commands
-
-| Command | Description | Permission Required |
-|---------|-------------|---------------------|
-| `/setperm [id] [permission]` | Set a player's permission level | admin, god |
-| `/removeperm [id]` | Remove all permissions from a player | admin, god |
-
-### Examples:
-```
-/setperm 5 admin     -- Give player ID 5 admin permissions
-/removeperm 5        -- Remove all permissions from player ID 5
+# This resource must start AFTER qb-core
+ensure QBCore-Perms-Edits
 ```
 
----
+### 3. Configure
+
+Edit `config.lua` to match your server setup:
+
+| Option | Description |
+|--------|-------------|
+| `Config.UseLicenseId` | `false` = permissions tied to CitizenID (character-based), `true` = tied to License (account-based) |
+| `Config.PermissionLevels` | Must match the ACE groups in your `server.cfg` |
+
+### 4. ACE Groups (server.cfg)
+
+Make sure your `server.cfg` has the ACE groups defined:
+
+```cfg
+# Example ACE principals
+add_ace qbcore.god command allow
+add_ace qbcore.admin command allow
+add_ace qbcore.moderator command allow
+```
 
 ## How It Works
 
-### Permission Flow
+This resource uses the `exports['qb-core']:GetCoreObject()` pattern to grab the QBCore object and then **replaces** the permission functions directly on it. Since it starts after `qb-core`, all internal calls within qb-core (and other resources) will use the new database-backed functions automatically.
 
-```
-Player Joins
-    |
-    v
-QBCore:Server:PlayerLoaded fires
-    |
-    v
-Fetch permissions from DB (by citizenid/license)
-    |
-    v
-Apply ACE principals (add_principal identifier.xxx qbcore.admin)
-    |
-    v
-Refresh commands (player can now use admin commands)
-    |
-    v
-Client receives OnPermissionUpdate event
-```
+### Commands
 
-### Data Flow (Granting Permission)
-
-```
-/setperm 5 admin
-    |
-    v
-AddPermission(5, "admin")
-    |
-    v
-Save to DB (DELETE old + INSERT new)
-    |
-    v
-Apply ACE principal in memory
-    |
-    v
-Commands.Refresh(5)  -- player can use admin commands
-```
-
----
-
-## ACE Configuration
-
-Make sure your `server.cfg` has the appropriate ACE groups:
-
-```cfg
-# Permission groups
-add_ace group.admin command.setperm allow
-add_ace group.admin command.removeperm allow
-add_ace group.god command.setperm allow
-add_ace group.god command.removeperm allow
-```
-
----
+| Command | Permission | Description |
+|---------|-----------|-------------|
+| `/setperm [id] [permission]` | admin/god | Set a player's permission level |
+| `/removeperm [id]` | admin/god | Remove all permissions from a player |
 
 ## Troubleshooting
 
-### Permissions not applying on join?
-- Enable `Config.Debug = true` and check server console
-- Verify `QBCore:Server:PlayerLoaded` event fires (check qb-core events)
-- Ensure `oxmysql` is properly connected and the `permissions` table exists
-- Check that `USE_LICENSE_ID` matches how permissions were originally saved
+### Permissions not saving?
+- Check that `oxmysql` is running and the database table exists
+- Enable `Config.Debug = true` in `config.lua` to see console logs
 
-### ACE principal errors?
-- Verify your `server.cfg` has `qbcore.admin`, `qbcore.god`, etc. groups defined
-- Check that `add_principal` commands use valid identifiers
+### Resource not overriding?
+- Make sure `QBCore-Perms-Edits` starts **after** `qb-core` in `server.cfg`
+- Check for errors in the server console on startup
 
-### Database errors?
-- Ensure `oxmysql` resource is started and configured
-- Verify MySQL connection string in `server.cfg`
-- Check that the `permissions` table was created successfully
-
----
-
-## Changelog
-
-### v2.0.0
-- Restructured into proper resource with fxmanifest.lua
-- Merged PR #1: Added PlayerLoaded event handler for permission sync
-- Fixed critical bug: nil check now happens BEFORE using Player.PlayerData
-- Added memory cache to prevent double-loading permissions
-- Added database abstraction layer (server/database.lua)
-- Added pcall error handling for ACE commands
-- Added debug logging system
-- Added `/setperm` and `/removeperm` admin commands
-- Added input validation (source checks, nil checks, permission sanitization)
-- Added playerDropped cleanup handler
-
-### v1.0.0
-- Initial release - README-only documentation
-
----
-
-## License
-
-GPL-3.0 - Include attribution if modifying or distributing.
+### ACE principals not working?
+- Verify your `server.cfg` has the correct `add_ace qbcore.[permission]` entries
+- Restart the server after changing ACE settings (reconnecting isn't enough)
