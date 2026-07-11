@@ -41,7 +41,7 @@ function DB.UpsertPermission(name, identifier, permission, identifierType, callb
     MySQL.Async.execute('DELETE FROM permissions WHERE identifier = ?', { identifier }, function()
         MySQL.Async.insert(
             'INSERT INTO permissions (name, identifier, permission, type) VALUES (?, ?, ?, ?)',
-            { name, permission:lower(), identifierType },
+            { name, identifier, permission:lower(), identifierType },
             function(insertId)
                 debugLog(('Permission ^3%s^7 saved for ^5%s^7'):format(permission, identifier))
                 if callback then callback(insertId ~= nil) end
